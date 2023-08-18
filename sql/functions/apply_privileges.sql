@@ -27,7 +27,7 @@ BEGIN
  * Apply privileges and ownership that exist on a given parent to the given child table
  */
 
-SELECT jobmon INTO v_jobmon FROM @extschema@.part_config WHERE parent_table = p_parent_schema ||'.'|| p_parent_tablename;
+SELECT jobmon INTO v_jobmon FROM partman.part_config WHERE parent_table = p_parent_schema ||'.'|| p_parent_tablename;
 IF v_jobmon IS NULL THEN
     RAISE EXCEPTION 'Given table is not managed by this extention: %.%', p_parent_schema, p_parent_tablename;
 END IF;
@@ -79,7 +79,7 @@ END IF;
 FOR v_parent_grant IN 
     SELECT array_agg(DISTINCT privilege_type::text ORDER BY privilege_type::text) AS types
             , grantee
-    FROM @extschema@.table_privs
+    FROM partman.table_privs
     WHERE table_schema = p_parent_schema::name AND table_name = p_parent_tablename::name
     GROUP BY grantee 
 LOOP
@@ -89,7 +89,7 @@ LOOP
     FOR v_child_grant IN 
         SELECT array_agg(DISTINCT privilege_type::text ORDER BY privilege_type::text) AS types
                 , grantee
-        FROM @extschema@.table_privs 
+        FROM partman.table_privs 
         WHERE table_schema = p_child_schema::name AND table_name = p_child_tablename::name
         GROUP BY grantee 
     LOOP
@@ -130,11 +130,18 @@ LOOP
 
 END LOOP;
 
+-- REPLICA IDENTITY FULL beallitasa
+v_sql := 'ALTER TABLE %I.%I REPLICA IDENTITY FULL';
+EXECUTE format(v_sql
+              , p_child_schema
+              , p_child_tablename);
+-- REPLICA IDENTITY FULL beallitasa end
+
 -- Revoke all privileges from roles that have none on the parent
 IF v_grantees IS NOT NULL THEN
     FOR v_row_revoke IN 
         SELECT role FROM (
-            SELECT DISTINCT grantee::text AS role FROM @extschema@.table_privs WHERE table_schema = p_child_schema::name AND table_name = p_child_tablename::name
+            SELECT DISTINCT grantee::text AS role FROM partman.table_privs WHERE table_schema = p_child_schema::name AND table_name = p_child_tablename::name
             EXCEPT
             SELECT unnest(v_grantees)) x
     LOOP
