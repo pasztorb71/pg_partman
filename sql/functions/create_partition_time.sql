@@ -54,6 +54,8 @@ v_time                          timestamptz;
 v_partition_type                          text;
 v_unlogged                      char;
 v_year                          text;
+v_database                      text;
+
 
 BEGIN
 /*
@@ -296,7 +298,8 @@ FOREACH v_time IN ARRAY p_partition_times LOOP
         EXCEPTION WHEN OTHERS THEN 
           RAISE WARNING '%', SQLERRM;
           RAISE WARNING '% not created', v_partition_name;
-          PERFORM partman.insert_logs('enforcement_eligibility', 'create_partition_time', 
+          SELECT * INTO v_database FROM current_database();
+          PERFORM partman.insert_logs(v_database, 'create_partition_time', 
             SQLERRM||chr(10)||v_partition_name || ' not created' );
         END;
     ELSE -- non-native
