@@ -1,5 +1,5 @@
 CREATE FUNCTION @extschema@.drop_partition_time(p_parent_table text, p_retention interval DEFAULT NULL, p_keep_table boolean DEFAULT NULL, p_keep_index boolean DEFAULT NULL, p_retention_schema text DEFAULT NULL, p_reference_timestamp timestamptz DEFAULT CURRENT_TIMESTAMP) RETURNS int
-  RETURNS integer
+ RETURNS integer
  LANGUAGE plpgsql
 AS $function$
 DECLARE
@@ -35,6 +35,7 @@ v_row                       record;
 v_sql                       text;
 v_step_id                   bigint;
 v_sub_parent                text;
+v_database                  text;
 
 BEGIN
 /*
@@ -213,7 +214,15 @@ LOOP
                 IF v_drop_cascade_fk OR v_sub_parent IS NOT NULL THEN
                     v_sql := v_sql || ' CASCADE';
                 END IF;
-                EXECUTE format(v_sql, v_row.partition_schemaname, v_row.partition_tablename);
+                BEGIN
+                  EXECUTE format(v_sql, v_row.partition_schemaname, v_row.partition_tablename);
+                EXCEPTION WHEN OTHERS THEN
+                  RAISE WARNING '%', SQLERRM;
+                  RAISE WARNING '% not dropped', v_row.partition_tablename;
+                  SELECT * INTO v_database FROM current_database(); 
+                  PERFORM partman.insert_logs(v_database, 'drop_partition_time', 
+                    SQLERRM||chr(10)||v_row.partition_tablename || ' not dropped' );
+                END;                
                 IF v_jobmon_schema IS NOT NULL THEN
                     PERFORM update_step(v_step_id, 'OK', 'Done');
                 END IF;
