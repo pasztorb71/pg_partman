@@ -1,6 +1,7 @@
 CREATE FUNCTION @extschema@.drop_partition_time(p_parent_table text, p_retention interval DEFAULT NULL, p_keep_table boolean DEFAULT NULL, p_keep_index boolean DEFAULT NULL, p_retention_schema text DEFAULT NULL, p_reference_timestamp timestamptz DEFAULT CURRENT_TIMESTAMP) RETURNS int
-    LANGUAGE plpgsql
-    AS $$
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
 DECLARE
 
 ex_context                  text;
@@ -34,6 +35,7 @@ v_row                       record;
 v_sql                       text;
 v_step_id                   bigint;
 v_sub_parent                text;
+v_database                  text;
 
 BEGIN
 /*
@@ -73,7 +75,7 @@ IF p_retention IS NULL THEN
         , v_datetime_string
         , v_retention_schema
         , v_jobmon
-    FROM @extschema@.part_config 
+    FROM partman.part_config 
     WHERE parent_table = p_parent_table 
     AND retention IS NOT NULL;
 
@@ -101,7 +103,7 @@ ELSE
         , v_datetime_string
         , v_retention_schema
         , v_jobmon
-    FROM @extschema@.part_config 
+    FROM partman.part_config 
     WHERE parent_table = p_parent_table;
     v_retention := p_retention;
 
@@ -110,7 +112,7 @@ ELSE
     END IF;
 END IF;
 
-SELECT general_type INTO v_control_type FROM @extschema@.check_control_type(v_parent_schema, v_parent_tablename, v_control);
+SELECT general_type INTO v_control_type FROM partman.check_control_type(v_parent_schema, v_parent_tablename, v_control);
 IF v_control_type <> 'time' THEN 
     IF (v_control_type = 'id' AND v_epoch = 'none') OR v_control_type <> 'id' THEN
         RAISE EXCEPTION 'Cannot run on partition set without time based control column or epoch flag set with an id column. Found control: %, epoch: %', v_control_type, v_epoch;
@@ -119,9 +121,9 @@ END IF;
 
 SELECT current_setting('search_path') INTO v_old_search_path;
 IF length(v_old_search_path) > 0 THEN
-   v_new_search_path := '@extschema@,pg_temp,'||v_old_search_path;
+   v_new_search_path := 'partman,pg_temp,'||v_old_search_path;
 ELSE
-    v_new_search_path := '@extschema@,pg_temp';
+    v_new_search_path := 'partman,pg_temp';
 END IF;
 IF v_jobmon THEN
     SELECT nspname INTO v_jobmon_schema FROM pg_catalog.pg_namespace n, pg_catalog.pg_extension e WHERE e.extname = 'pg_jobmon'::name AND e.extnamespace = n.oid;
@@ -146,22 +148,22 @@ FROM pg_catalog.pg_tables
 WHERE schemaname = split_part(p_parent_table, '.', 1)::name
 AND tablename = split_part(p_parent_table, '.', 2)::name;
 
-SELECT sub_parent INTO v_sub_parent FROM @extschema@.part_config_sub WHERE sub_parent = p_parent_table;
+SELECT sub_parent INTO v_sub_parent FROM partman.part_config_sub WHERE sub_parent = p_parent_table;
 
 -- Loop through child tables of the given parent
 -- Must go in ascending order to avoid dropping what may be the "last" partition in the set after dropping tables that match retention period
 FOR v_row IN 
-    SELECT partition_schemaname, partition_tablename FROM @extschema@.show_partitions(p_parent_table, 'ASC')
+    SELECT partition_schemaname, partition_tablename FROM partman.show_partitions(p_parent_table, 'ASC')
 LOOP
     -- pull out datetime portion of partition's tablename to make the next one
-     SELECT child_start_time INTO v_partition_timestamp FROM @extschema@.show_partition_info(v_row.partition_schemaname||'.'||v_row.partition_tablename
+     SELECT child_start_time INTO v_partition_timestamp FROM partman.show_partition_info(v_row.partition_schemaname||'.'||v_row.partition_tablename
         , v_partition_interval::text
         , p_parent_table);
     -- Add one interval since partition names contain the start of the constraint period
     IF (v_partition_timestamp + v_partition_interval) < (p_reference_timestamp - v_retention) THEN
 
         -- Do not allow final partition to be dropped if it is not a sub-partition parent
-        SELECT count(*) INTO v_count FROM @extschema@.show_partitions(p_parent_table);
+        SELECT count(*) INTO v_count FROM partman.show_partitions(p_parent_table);
         IF v_count = 1 AND v_sub_parent IS NULL THEN
             RAISE WARNING 'Attempt to drop final partition in partition set % as part of retention policy. If you see this message multiple times for the same table, advise reviewing retention policy and/or data entry into the partition set. Also consider setting "infinite_time_partitions = true" if there are large gaps in data insertion.).', p_parent_table;
             CONTINUE;
@@ -197,7 +199,7 @@ LOOP
             END IF;
         END IF;
         IF v_partition_type = 'time-custom' THEN
-            DELETE FROM @extschema@.custom_time_partitions WHERE parent_table = p_parent_table AND child_table = v_row.partition_schemaname||'.'||v_row.partition_tablename;
+            DELETE FROM partman.custom_time_partitions WHERE parent_table = p_parent_table AND child_table = v_row.partition_schemaname||'.'||v_row.partition_tablename;
         END IF;
         IF v_jobmon_schema IS NOT NULL THEN
             PERFORM update_step(v_step_id, 'OK', 'Done');
@@ -212,7 +214,15 @@ LOOP
                 IF v_drop_cascade_fk OR v_sub_parent IS NOT NULL THEN
                     v_sql := v_sql || ' CASCADE';
                 END IF;
-                EXECUTE format(v_sql, v_row.partition_schemaname, v_row.partition_tablename);
+                BEGIN
+                  EXECUTE format(v_sql, v_row.partition_schemaname, v_row.partition_tablename);
+                EXCEPTION WHEN OTHERS THEN
+                  RAISE WARNING '%', SQLERRM;
+                  RAISE WARNING '% not dropped', v_row.partition_tablename;
+                  SELECT * INTO v_database FROM current_database(); 
+                  PERFORM partman.insert_logs(v_database, 'drop_partition_time', 
+                    SQLERRM||chr(10)||v_row.partition_tablename || ' not dropped' );
+                END;                
                 IF v_jobmon_schema IS NOT NULL THEN
                     PERFORM update_step(v_step_id, 'OK', 'Done');
                 END IF;
@@ -272,7 +282,7 @@ LOOP
         END IF; -- End retention schema if
 
         -- If child table is a subpartition, remove it from part_config & part_config_sub (should cascade due to FK)
-        DELETE FROM @extschema@.part_config WHERE parent_table = v_row.partition_schemaname||'.'||v_row.partition_tablename;
+        DELETE FROM partman.part_config WHERE parent_table = v_row.partition_schemaname||'.'||v_row.partition_tablename;
 
         v_drop_count := v_drop_count + 1;
     END IF; -- End retention check IF
@@ -312,5 +322,5 @@ CONTEXT: %
 DETAIL: %
 HINT: %', ex_message, ex_context, ex_detail, ex_hint;
 END
-$$;
-
+$function$
+;
