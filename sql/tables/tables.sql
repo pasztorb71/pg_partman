@@ -1,3 +1,10 @@
+CREATE TABLE partman.logs(
+  id UUID NOT NULL ,
+  ins_date timestamptz(6) NOT NULL DEFAULT CURRENT_TIMESTAMP ,
+  modul TEXT NOT NULL, 
+  msg TEXT NOT NULL,
+CONSTRAINT pk_logs PRIMARY KEY (id));
+
 CREATE TABLE @extschema@.part_config (
     parent_table text NOT NULL
     , control text NOT NULL

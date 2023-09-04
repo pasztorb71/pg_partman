@@ -293,9 +293,11 @@ FOREACH v_time IN ARRAY p_partition_times LOOP
                 , v_partition_timestamp_start
                 , v_partition_timestamp_end);
         END IF;
-        EXCEPTION WHEN SQLSTATE '23514' THEN 
+        EXCEPTION WHEN OTHERS THEN 
           RAISE WARNING '%', SQLERRM;
           RAISE WARNING '% not created', v_partition_name;
+          PERFORM partman.insert_logs('enforcement_eligibility', 'create_partition_time', 
+            SQLERRM||chr(10)||v_partition_name || ' not created' );
         END;
     ELSE -- non-native
 
