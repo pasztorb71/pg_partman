@@ -247,6 +247,7 @@ FOREACH v_time IN ARRAY p_partition_times LOOP
             PERFORM @extschema@.inherit_template_properties(p_parent_table, v_parent_schema, v_partition_name);
         END IF;
 
+        BEGIN
         IF v_epoch = 'none' THEN
             -- Attach with normal, time-based values for native constraint
             EXECUTE format('ALTER TABLE %I.%I ATTACH PARTITION %I.%I FOR VALUES FROM (%L) TO (%L)'
@@ -292,6 +293,12 @@ FOREACH v_time IN ARRAY p_partition_times LOOP
                 , v_partition_timestamp_start
                 , v_partition_timestamp_end);
         END IF;
+        EXCEPTION WHEN OTHERS THEN 
+          RAISE WARNING '%', SQLERRM;
+          RAISE WARNING '% not created', v_partition_name;
+          PERFORM partman.insert_logs('enforcement_eligibility', 'create_partition_time', 
+            SQLERRM||chr(10)||v_partition_name || ' not created' );
+        END;
     ELSE -- non-native
 
         IF v_parent_tablespace IS NOT NULL THEN
